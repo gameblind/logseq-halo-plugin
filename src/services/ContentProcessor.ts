@@ -223,8 +223,9 @@ export class ContentProcessor {
    * 处理 Logseq 属性
    */
   private static processLogseqProperties(content: string): string {
-    // 移除属性行（以 :: 结尾的行）
-    return content.replace(/^.+::\s*.*$/gm, '').replace(/\n\s*\n\s*\n/g, '\n\n')
+    // 移除属性行（以 :: 结尾的行），但保留包含图片链接的行
+    // 使用更精确的正则表达式，排除以 ![ 开头的图片链接
+    return content.replace(/^\s*-?\s*[^!\[]*::\s*.*$/gm, '').replace(/\n\s*\n\s*\n/g, '\n\n')
   }
 
   /**
