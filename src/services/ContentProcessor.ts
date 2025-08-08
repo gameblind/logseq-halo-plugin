@@ -43,7 +43,11 @@ export class ContentProcessor {
     const lines = content.split('\n')
     
     for (const line of lines) {
-      const trimmedLine = line.trim()
+      let trimmedLine = line.trim()
+      
+      // 移除Logseq块的前缀（如 "- ", "  - ", "    - " 等）
+      trimmedLine = trimmedLine.replace(/^-\s*/, '')
+      
       if (!trimmedLine.includes('::')) {
         continue
       }
