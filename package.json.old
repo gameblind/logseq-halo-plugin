@@ -1,0 +1,45 @@
+{
+  "name": "logseq-halo-plugin",
+  "version": "0.1.0",
+  "description": "A Logseq plugin for publishing notes to Halo blog system",
+  "main": "dist/index.html",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "logseq",
+    "plugin",
+    "halo",
+    "blog",
+    "markdown",
+    "publishing"
+  ],
+  "author": "Logseq-Halo Plugin Team",
+  "license": "MIT",
+  "logseq": {
+    "id": "logseq-halo-plugin",
+    "title": "Halo Publisher",
+    "icon": "📝",
+    "description": "Publish your Logseq notes to Halo blog system"
+  },
+  "dependencies": {
+    "@logseq/libs": "^0.0.15",
+    "@halo-dev/api-client": "^2.0.0",
+    "markdown-it": "^13.0.2",
+    "transliteration": "^2.3.5",
+    "yaml": "^2.3.4",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "vite": "^5.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0"
+  }
+}

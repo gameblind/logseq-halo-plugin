@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Halo图片上传API测试</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .config-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+        input[type="text"], input[type="url"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background: white;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+        }
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .btn-primary {
+            background-color: #007bff;
+            color: white;
+        }
+        .btn-primary:hover {
+            background-color: #0056b3;
+        }
+        .btn-secondary {
+            background-color: #6c757d;
+            color: white;
+        }
+        .btn-secondary:hover {
+            background-color: #545b62;
+        }
+        .btn-success {
+            background-color: #28a745;
+            color: white;
+        }
+        .btn-success:hover {
+            background-color: #1e7e34;
+        }
+        .log-container {
+            background: #1e1e1e;
+            color: #f8f8f2;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 13px;
+            line-height: 1.4;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+        }
+        .log-success { color: #50fa7b; }
+        .log-error { color: #ff5555; }
+        .log-warning { color: #f1fa8c; }
+        .log-info { color: #8be9fd; }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-weight: 600;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Halo图片上传API测试工具</h1>
+        
+        <div class="config-section">
+            <h3>📋 配置信息</h3>
+            <div class="form-group">
+                <label for="haloUrl">Halo站点地址:</label>
+                <input type="url" id="haloUrl" placeholder="https://your-halo-site.com" value="">
+            </div>
+            <div class="form-group">
+                <label for="apiToken">API Token:</label>
+                <input type="text" id="apiToken" placeholder="your-api-token" value="">
+            </div>
+        </div>
+        
+        <div class="config-section">
+            <h3>📁 选择图片文件</h3>
+            <div class="form-group">
+                <label for="imageFile">选择图片文件:</label>
+                <input type="file" id="imageFile" accept="image/*">
+            </div>
+        </div>
+        
+        <div class="button-group">
+            <button class="btn-secondary" onclick="testConnection()">🌐 测试连接</button>
+            <button class="btn-primary" onclick="uploadImage()">📤 上传图片</button>
+            <button class="btn-success" onclick="clearLog()">🧹 清空日志</button>
+        </div>
+        
+        <div id="status"></div>
+        
+        <div class="log-container" id="logContainer">
+            <div class="log-entry log-info">📖 使用说明:</div>
+            <div class="log-entry">1. 填写Halo站点地址和API Token</div>
+            <div class="log-entry">2. 选择要上传的图片文件</div>
+            <div class="log-entry">3. 点击"测试连接"验证配置</div>
+            <div class="log-entry">4. 点击"上传图片"开始测试</div>
+            <div class="log-entry">---</div>
+        </div>
+    </div>
+
+    <script>
+        // 日志函数
+        function log(message, type = 'info') {
+            const logContainer = document.getElementById('logContainer');
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry log-${type}`;
+            logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logContainer.appendChild(logEntry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+        
+        function clearLog() {
+            document.getElementById('logContainer').innerHTML = '';
+            document.getElementById('status').innerHTML = '';
+        }
+        
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = `<div class="status ${type}">${message}</div>`;
+        }
+        
+        // 获取配置
+        function getConfig() {
+            const haloUrl = document.getElementById('haloUrl').value.trim();
+            const apiToken = document.getElementById('apiToken').value.trim();
+            
+            if (!haloUrl || !apiToken) {
+                showStatus('❌ 请填写Halo站点地址和API Token', 'error');
+                return null;
+            }
+            
+            return { haloUrl, apiToken };
+        }
+        
+        // 测试连接
+        async function testConnection() {
+            const config = getConfig();
+            if (!config) return;
+            
+            log('🌐 开始测试Halo连接...', 'info');
+            
+            try {
+                const testUrl = `${config.haloUrl}/apis/api.console.halo.run/v1alpha1/users/-/detail`;
+                log(`📡 请求地址: ${testUrl}`);
+                
+                const response = await fetch(testUrl, {
+                    headers: {
+                        'Authorization': `Bearer ${config.apiToken}`
+                    }
+                });
+                
+                log(`📡 响应状态: ${response.status} ${response.statusText}`);
+                
+                if (response.ok) {
+                    log('✅ Halo连接测试成功!', 'success');
+                    showStatus('✅ Halo连接正常，可以进行图片上传测试', 'success');
+                } else {
+                    const errorText = await response.text();
+                    log(`❌ 连接失败: ${errorText}`, 'error');
+                    showStatus('❌ Halo连接失败，请检查站点地址和API Token', 'error');
+                }
+            } catch (error) {
+                log(`❌ 连接异常: ${error.message}`, 'error');
+                showStatus('❌ 网络连接异常，请检查网络和站点地址', 'error');
+            }
+        }
+        
+        // 上传图片
+        async function uploadImage() {
+            const config = getConfig();
+            if (!config) return;
+            
+            const fileInput = document.getElementById('imageFile');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showStatus('❌ 请选择要上传的图片文件', 'error');
+                return;
+            }
+            
+            log('📤 开始上传图片...', 'info');
+            log(`📁 文件信息: ${file.name} (${file.size} 字节, ${file.type})`);
+            
+            try {
+                // 准备FormData
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('policyName', 'default-policy');
+                // 不指定groupName，让Halo使用默认设置
+                // formData.append('groupName', 'default');
+                
+                log('📋 准备上传数据完成');
+                
+                // 上传到Halo
+                const uploadUrl = `${config.haloUrl}/apis/api.console.halo.run/v1alpha1/attachments/upload`;
+                log(`🌐 上传地址: ${uploadUrl}`);
+                
+                const response = await fetch(uploadUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${config.apiToken}`
+                    },
+                    body: formData
+                });
+                
+                log(`📡 服务器响应: ${response.status} ${response.statusText}`);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    log(`❌ 上传失败: ${errorText}`, 'error');
+                    showStatus(`❌ 图片上传失败: ${response.status} ${response.statusText}`, 'error');
+                    return;
+                }
+                
+                const result = await response.json();
+                log('📄 响应数据:', 'info');
+                log(JSON.stringify(result, null, 2));
+                
+                // 检查响应中的图片URL - 根据Halo API响应结构解析
+                let imageUrl = null;
+                
+                // 方法1: 从annotations中获取uri（Halo标准响应）
+                if (result.metadata?.annotations?.["storage.halo.run/uri"]) {
+                    imageUrl = result.metadata.annotations["storage.halo.run/uri"];
+                    log(`📍 从annotations获取到图片URI: ${imageUrl}`);
+                }
+                // 方法2: 从spec.url获取（备用）
+                else if (result.spec?.url) {
+                    imageUrl = result.spec.url;
+                    log(`📍 从spec.url获取到图片URL: ${imageUrl}`);
+                }
+                // 方法3: 从根级url获取（备用）
+                else if (result.url) {
+                    imageUrl = result.url;
+                    log(`📍 从根级url获取到图片URL: ${imageUrl}`);
+                }
+                // 方法4: 从data.url获取（备用）
+                else if (result.data?.url) {
+                    imageUrl = result.data.url;
+                    log(`📍 从data.url获取到图片URL: ${imageUrl}`);
+                }
+                
+                if (imageUrl) {
+                    // 构建完整访问地址
+                    let fullUrl = imageUrl;
+                    if (imageUrl.startsWith('/')) {
+                        fullUrl = config.haloUrl + imageUrl;
+                    }
+                    
+                    log(`🎉 图片上传成功!`, 'success');
+                    log(`📍 原始URI: ${imageUrl}`, 'success');
+                    log(`🔗 完整访问地址: ${fullUrl}`, 'success');
+                    log(`💡 说明: 图片已成功上传到Halo，可以在文章中使用相对路径 ${imageUrl}`);
+                    showStatus(`🎉 图片上传成功! 地址: ${fullUrl}`, 'success');
+                    
+                    // 显示图片预览
+                    const preview = document.createElement('div');
+                    preview.innerHTML = `
+                        <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
+                            <h4>📷 上传结果预览:</h4>
+                            <p><strong>原始URI:</strong> ${imageUrl}</p>
+                            <p><strong>完整地址:</strong> <a href="${fullUrl}" target="_blank">${fullUrl}</a></p>
+                            <img src="${fullUrl}" alt="上传的图片" style="max-width: 100%; max-height: 300px; border: 1px solid #ddd; border-radius: 5px;">
+                        </div>
+                    `;
+                    document.getElementById('status').appendChild(preview);
+                } else {
+                    log('❌ 响应中未找到图片URL', 'error');
+                    log(`💡 预期字段: metadata.annotations["storage.halo.run/uri"] 或 spec.url 或 url`, 'warning');
+                    log(`完整响应: ${JSON.stringify(result, null, 2)}`, 'warning');
+                    showStatus('❌ 上传可能成功但未返回图片地址', 'error');
+                }
+                
+            } catch (error) {
+                log(`❌ 上传异常: ${error.message}`, 'error');
+                showStatus(`❌ 上传过程中发生错误: ${error.message}`, 'error');
+            }
+        }
+        
+        // 页面加载完成后的初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            log('🚀 Halo图片上传API测试工具已就绪', 'success');
+        });
+    </script>
+</body>
+</html>
