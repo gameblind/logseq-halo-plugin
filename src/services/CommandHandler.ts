@@ -92,6 +92,14 @@ export class CommandHandler {
       // 解析内容和元数据
       const { metadata, content } = ContentProcessor.parsePageContent(pageContent, pageName)
       
+      // 站点验证：检查文章是否属于不同的站点
+      if (metadata.halo?.site && metadata.halo.site !== site.id) {
+        const errorMsg = `文章属于不同的 Halo 站点 (${metadata.halo.site})，无法发布到当前站点 (${site.id})`
+        Logger.warn(errorMsg)
+        logseq.UI.showMsg(errorMsg, 'warning')
+        return
+      }
+      
       // 验证内容
       const validationErrors = ContentProcessor.validateContent(metadata, content)
       if (validationErrors.length > 0) {
@@ -102,18 +110,50 @@ export class CommandHandler {
       const haloService = this.getHaloService(site)
       
       // 检查文章是否已存在
-      const existingPost = await haloService.getPost(metadata.slug || '')
+      const existingPost = await haloService.getPostBySlug(metadata.slug || '')
       
       // 发布文章
       const result = await haloService.publishPost(metadata, content, existingPost || undefined)
       
       if (result.success) {
-        // 更新页面的 frontmatter
-        await this.updatePageFrontmatter(pageName, {
-          'halo-post-name': result.postName,
-          'halo-site': site.id,
-          'last-published': new Date().toISOString()
-        })
+        // 获取发布后的文章信息，包含最新的标签和分类
+        const publishedPost = await haloService.getPost(result.postName)
+        
+        if (publishedPost) {
+          // 获取标签和分类的显示名称
+          const [postCategories, postTags] = await Promise.all([
+            haloService.getCategoryDisplayNames(publishedPost.post.spec.categories),
+            haloService.getTagDisplayNames(publishedPost.post.spec.tags)
+          ])
+          
+          Logger.info(`发布后标签: ${postTags.join(', ')}, 分类: ${postCategories.join(', ')}`)
+          
+          // 更新页面的 frontmatter，包含最新的标签和分类信息
+          const frontmatterUpdates: Record<string, any> = {
+            'halo-post-name': result.postName,
+            'halo-site': site.id,
+            'last-published': new Date().toISOString()
+          }
+          
+          // 只有当标签和分类不为空时才更新
+          if (postCategories.length > 0) {
+            frontmatterUpdates.categories = postCategories
+          }
+          if (postTags.length > 0) {
+            frontmatterUpdates.tags = postTags
+          }
+          
+          await this.updatePageFrontmatter(pageName, frontmatterUpdates)
+          
+          Logger.info(`页面 frontmatter 已更新: 标签 ${postTags.length} 个, 分类 ${postCategories.length} 个`)
+        } else {
+          // 如果无法获取发布后的文章信息，只更新基本信息
+          await this.updatePageFrontmatter(pageName, {
+            'halo-post-name': result.postName,
+            'halo-site': site.id,
+            'last-published': new Date().toISOString()
+          })
+        }
         
         const message = existingPost 
           ? `文章更新成功: ${metadata.title}`
@@ -227,6 +267,76 @@ export class CommandHandler {
     } catch (error) {
       Logger.error('获取文章列表失败:', error)
       logseq.UI.showMsg(`获取文章列表失败: ${error instanceof Error ? error.message : '未知错误'}`, 'error')
+    }
+  }
+
+  /**
+   * 从 Halo 拉取文章
+   */
+  async pullPostFromHalo(postName?: string): Promise<void> {
+    try {
+      const site = this.configManager.getDefaultSite()
+      if (!site) {
+        logseq.UI.showMsg('请先配置 Halo 站点', 'warning')
+        return
+      }
+
+      // 如果没有指定文章名称，获取文章列表让用户选择
+      if (!postName) {
+        logseq.UI.showMsg('请提供文章名称', 'warning')
+        return
+      }
+
+      logseq.UI.showMsg('正在拉取文章...', 'info')
+      
+      const haloService = this.getHaloService(site)
+      const result = await haloService.pullPost(postName)
+      
+      if (!result) {
+        throw new Error('文章不存在或拉取失败')
+      }
+      
+      // 创建 Logseq 页面
+      const fileName = `${result.title}.md`
+      
+      // 构建 frontmatter
+      const frontmatterLines = [
+        '---',
+        `title: ${result.frontmatter.title}`,
+        `slug: ${result.frontmatter.slug}`,
+        result.frontmatter.cover ? `cover: ${result.frontmatter.cover}` : '',
+        result.frontmatter.excerpt ? `excerpt: ${result.frontmatter.excerpt}` : '',
+        result.frontmatter.categories.length > 0 ? `categories: [${result.frontmatter.categories.join(', ')}]` : '',
+        result.frontmatter.tags.length > 0 ? `tags: [${result.frontmatter.tags.join(', ')}]` : '',
+        'halo:',
+        `  site: ${result.frontmatter.halo.site}`,
+        `  name: ${result.frontmatter.halo.name}`,
+        `  publish: ${result.frontmatter.halo.publish}`,
+        '---',
+        ''
+      ].filter(line => line !== '').join('\n')
+      
+      const fullContent = frontmatterLines + result.content
+      
+      // 创建文件 - 使用正确的 Logseq API
+      // 注意：这里需要用户手动创建文件，因为 Logseq 插件 API 限制
+      Logger.info(`请手动创建文件: ${fileName}`)
+      Logger.info(`文件内容:\n${fullContent}`)
+      
+      // 复制内容到剪贴板
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(fullContent)
+        logseq.UI.showMsg('文章内容已复制到剪贴板，请手动创建页面并粘贴', 'info')
+      }
+      
+      logseq.UI.showMsg(`文章拉取成功: ${result.title}`, 'success')
+      Logger.info(`文章拉取成功: ${result.title}`)
+      Logger.debug(`分类: ${result.frontmatter.categories.join(', ')}`)
+      Logger.debug(`标签: ${result.frontmatter.tags.join(', ')}`)
+      
+    } catch (error) {
+      Logger.error('拉取文章失败:', error)
+      logseq.UI.showMsg(`拉取文章失败: ${error instanceof Error ? error.message : '未知错误'}`, 'error')
     }
   }
 

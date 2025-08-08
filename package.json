@@ -1,6 +1,6 @@
 {
   "name": "logseq-halo-plugin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A Logseq plugin to publish notes to Halo blog system",
   "main": "dist/index.js",
   "scripts": {

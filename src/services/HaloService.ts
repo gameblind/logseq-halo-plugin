@@ -10,14 +10,29 @@ export class HaloService {
   private site: HaloSite
   private baseUrl: string
   private headers: Record<string, string>
+  private imageCache: Map<string, string> = new Map() // 图片缓存：路径 -> Halo URL
 
   constructor(site: HaloSite) {
     this.site = site
-    this.baseUrl = site.url.endsWith('/') ? site.url.slice(0, -1) : site.url
+    this.baseUrl = site.url.replace(/\/$/, '') // 移除末尾斜杠
     this.headers = {
       'Authorization': `Bearer ${site.token}`,
       'Content-Type': 'application/json'
     }
+  }
+
+  /**
+   * 获取站点 ID
+   */
+  getSiteId(): string {
+    return this.site.id
+  }
+
+  /**
+   * 获取站点 URL
+   */
+  getSiteUrl(): string {
+    return this.site.url
   }
 
   /**
@@ -112,7 +127,7 @@ export class HaloService {
       Logger.info(`开始发布文章: ${metadata.title}`)
       
       // 处理图片上传
-      const processedContent = await this.processImages(markdownContent)
+      const processedContent = await this.processAttachments(markdownContent)
       
       let post: Post
       let content: Content
@@ -129,11 +144,29 @@ export class HaloService {
         content = result.content
       }
       
-      // 发布文章（如果需要）
-      if (metadata.published || metadata.publish) {
+      // 发布文章状态控制（参考 index.ts 的逻辑）
+      let shouldPublish = false
+      
+      // 检查发布状态的优先级
+      if (metadata.halo?.hasOwnProperty('publish')) {
+        // 优先使用 halo.publish 设置
+        shouldPublish = metadata.halo.publish
+      } else if (metadata.hasOwnProperty('publish')) {
+        // 其次使用 publish 属性
+        shouldPublish = metadata.publish || false
+      } else if (metadata.hasOwnProperty('published')) {
+        // 再次使用 published 属性
+        shouldPublish = metadata.published || false
+      } else {
+        // 最后使用默认设置（这里暂时默认为 false，可以后续从配置中读取）
+        shouldPublish = false
+      }
+      
+      if (shouldPublish) {
         await this.setPostPublished(post.metadata?.name || '', true)
         Logger.info(`文章发布成功: ${metadata.title}`)
       } else {
+        await this.setPostPublished(post.metadata?.name || '', false)
         Logger.info(`文章保存为草稿: ${metadata.title}`)
       }
       
@@ -155,8 +188,8 @@ export class HaloService {
     metadata: ArticleMetadata,
     markdownContent: string
   ): Promise<{ post: Post; content: Content }> {
-    // 处理图片上传和替换
-    const processedContent = await this.processImages(markdownContent)
+    // 处理附件上传和替换（包括图片和其他文件）
+    const processedContent = await this.processAttachments(markdownContent)
     
     // 生成随机UUID（参照index.ts的方式）
     const postId = this.generateUUID()
@@ -241,15 +274,42 @@ export class HaloService {
     metadata: ArticleMetadata,
     markdownContent: string
   ): Promise<{ post: Post; content: Content }> {
-    // 处理图片上传和替换
-    const processedContent = await this.processImages(markdownContent)
+    // 处理附件上传和替换（包括图片和其他文件）
+    const processedContent = await this.processAttachments(markdownContent)
     
-    // 创建新快照
-    const newSnapshot = await this.createSnapshot(processedContent)
+    // 准备更新的内容对象
+    const updatedContent: Content = {
+      rawType: 'markdown',
+      raw: processedContent,
+      content: processedContent // 简化处理，直接使用markdown
+    }
     
-    // 更新文章信息
+    // 处理分类和标签
+    let categoryNames: string[] = existing.post.spec.categories || []
+    let tagNames: string[] = existing.post.spec.tags || []
+    
+    if (metadata.categories && metadata.categories.length > 0) {
+      Logger.info(`处理分类: ${metadata.categories.join(', ')}`)
+      categoryNames = await this.getCategoryNames(metadata.categories)
+      Logger.info(`分类处理完成: ${categoryNames.join(', ')}`)
+    }
+    
+    if (metadata.tags && metadata.tags.length > 0) {
+      Logger.info(`处理标签: ${metadata.tags.join(', ')}`)
+      tagNames = await this.getTagNames(metadata.tags)
+      Logger.info(`标签处理完成: ${tagNames.join(', ')}`)
+    }
+    
+    // 更新文章信息（使用简化的annotations方式）
     const updatedPost: Post = {
       ...existing.post,
+      metadata: {
+        ...existing.post.metadata,
+        annotations: {
+          ...existing.post.metadata?.annotations,
+          'content.halo.run/content-json': JSON.stringify(updatedContent)
+        }
+      },
       spec: {
         ...existing.post.spec,
         title: metadata.title || existing.post.spec.title,
@@ -264,8 +324,8 @@ export class HaloService {
           autoGenerate: metadata.excerpt ? false : existing.post.spec.excerpt.autoGenerate,
           raw: metadata.excerpt || existing.post.spec.excerpt.raw
         },
-        categories: metadata.categories || existing.post.spec.categories,
-        tags: metadata.tags || existing.post.spec.tags
+        categories: categoryNames,
+        tags: tagNames
       }
     }
     
@@ -276,42 +336,47 @@ export class HaloService {
     )
     
     if (!postResponse.ok) {
+      const errorText = await postResponse.text()
+      Logger.error(`更新文章失败: ${postResponse.status} - ${errorText}`)
       throw new Error(`更新文章失败: ${postResponse.status}`)
     }
     
     const post: Post = await postResponse.json()
     
-    // 更新内容（通过快照方式）
-    const updatedContent: Content = {
-      rawType: 'markdown',
-      raw: processedContent,
-      content: processedContent // 简化处理，直接使用markdown
-    }
-    
-    // 获取并更新快照
-    const snapshotResponse = await this.request(
-      `/apis/uc.api.content.halo.run/v1alpha1/posts/${post.metadata?.name || ''}/draft?patched=true`,
-      'GET'
-    )
-    
-    if (snapshotResponse.ok) {
-      const snapshot = await snapshotResponse.json()
-      snapshot.metadata.annotations = {
-        ...snapshot.metadata.annotations,
-        'content.halo.run/content-json': JSON.stringify(updatedContent)
-      }
-      
-      await this.request(
-        `/apis/uc.api.content.halo.run/v1alpha1/posts/${post.metadata?.name || ''}/draft`,
-        'PUT',
-        snapshot
+    // 获取并更新快照（参考improved-article-publisher.js的实现）
+    try {
+      const snapshotResponse = await this.request(
+        `/apis/uc.api.content.halo.run/v1alpha1/posts/${existing.post.metadata?.name}/draft?patched=true`,
+        'GET'
       )
+      
+      if (snapshotResponse.ok) {
+        const snapshot = await snapshotResponse.json()
+        snapshot.metadata.annotations = {
+          ...snapshot.metadata.annotations,
+          'content.halo.run/content-json': JSON.stringify(updatedContent)
+        }
+        
+        const updateSnapshotResponse = await this.request(
+          `/apis/uc.api.content.halo.run/v1alpha1/posts/${existing.post.metadata?.name}/draft`,
+          'PUT',
+          snapshot
+        )
+        
+        if (!updateSnapshotResponse.ok) {
+          Logger.warn(`更新快照失败，但文章已更新: ${updateSnapshotResponse.status}`)
+        } else {
+          Logger.debug(`快照更新成功`)
+        }
+      } else {
+        Logger.warn(`获取快照失败，但文章已更新: ${snapshotResponse.status}`)
+      }
+    } catch (error) {
+      Logger.warn(`快照更新过程中出错，但文章已更新:`, error)
     }
-    
-    const content = updatedContent
     
     Logger.debug(`文章更新成功: ${post.spec.title}`)
-    return { post, content }
+    return { post, content: updatedContent }
   }
 
   /**
@@ -330,6 +395,19 @@ export class HaloService {
    */
   private generateSlug(title: string): string {
     return slugify(title, { trim: true }).substring(0, 50)
+  }
+
+  /**
+   * 生成标签slug（支持中文）
+   */
+  private generateTagSlug(name: string): string {
+    // Halo支持中文标签，只需要简单处理特殊字符
+    return name
+      .trim()
+      .replace(/[\s\t\n\r]+/g, '-')  // 空白字符替换为连字符
+      .replace(/[<>:"/\\|?*]/g, '')   // 移除文件系统不支持的字符
+      .replace(/^-+|-+$/g, '')        // 移除首尾的连字符
+      .substring(0, 50)               // 限制长度
   }
 
   /**
@@ -404,6 +482,34 @@ export class HaloService {
   }
 
   /**
+   * 通过 slug 获取文章
+   */
+  async getPostBySlug(slug: string): Promise<{ post: Post; content: Content; snapshot: Snapshot } | null> {
+    try {
+      Logger.debug(`通过 slug 获取文章: ${slug}`)
+      
+      // 获取所有文章列表
+      const allPosts = await this.getAllPosts()
+      
+      // 查找匹配的文章
+      const foundPost = allPosts.find(post => post.spec.slug === slug)
+      
+      if (!foundPost) {
+        Logger.debug(`未找到 slug 为 ${slug} 的文章`)
+        return null
+      }
+      
+      Logger.debug(`找到文章: ${foundPost.metadata.name}, slug: ${foundPost.spec.slug}`)
+      
+      // 通过文章的 name 获取完整信息
+      return await this.getPost(foundPost.metadata.name)
+    } catch (error) {
+      Logger.error('通过 slug 获取文章失败:', error)
+      return null
+    }
+  }
+
+  /**
    * 获取标签列表
    */
   async getTags(): Promise<Tag[]> {
@@ -473,42 +579,156 @@ export class HaloService {
    */
   async getTagNames(displayNames: string[]): Promise<string[]> {
     try {
+      Logger.debug(`开始处理标签: ${displayNames.join(', ')}`)
       const allTags = await this.getTags()
+      Logger.debug(`获取到 ${allTags.length} 个现有标签`)
       
       const notExistDisplayNames = displayNames.filter(
         (name) => !allTags.find((item) => item.spec.displayName === name)
       )
+      Logger.debug(`需要创建的新标签: ${notExistDisplayNames.join(', ')}`)
       
-      const promises = notExistDisplayNames.map((name) =>
-        this.request('/apis/content.halo.run/v1alpha1/tags', 'POST', {
-          spec: {
-            displayName: name,
-            slug: slugify(name, { trim: true }),
-            color: '#ffffff',
-            cover: ''
-          },
-          apiVersion: 'content.halo.run/v1alpha1',
-          kind: 'Tag',
-          metadata: { name: '', generateName: 'tag-' }
-        })
-      )
+      // 处理需要创建的新标签
+      const newTags = []
+      for (const name of notExistDisplayNames) {
+        try {
+          Logger.debug(`创建标签: ${name}`)
+          const response = await this.request('/apis/content.halo.run/v1alpha1/tags', 'POST', {
+            spec: {
+              displayName: name,
+              slug: this.generateTagSlug(name),
+              color: '#ffffff',
+              cover: ''
+            },
+            apiVersion: 'content.halo.run/v1alpha1',
+            kind: 'Tag',
+            metadata: { name: '', generateName: 'tag-' }
+          })
+          
+          if (!response.ok) {
+            const errorText = await response.text()
+            Logger.error(`创建标签失败 (${name}): ${response.status} ${response.statusText}`, errorText)
+            continue
+          }
+          
+          const newTag = await response.json()
+          newTags.push(newTag)
+          Logger.debug(`标签创建成功: ${name} -> ${newTag.metadata.name}`)
+        } catch (error) {
+          Logger.error(`创建标签异常 (${name}):`, error)
+        }
+      }
       
-      const newTagResponses = await Promise.all(promises)
-      const newTags = await Promise.all(
-        newTagResponses.map(response => response.json())
-      )
-      
+      // 获取现有标签的名称
       const existNames = displayNames
         .map((name) => {
           const found = allTags.find((item) => item.spec.displayName === name)
-          return found ? found.metadata.name : undefined
+          if (found) {
+            Logger.debug(`找到现有标签: ${name} -> ${found.metadata.name}`)
+            return found.metadata.name
+          }
+          return undefined
         })
         .filter(Boolean) as string[]
       
-      return [...existNames, ...newTags.map((item) => item.metadata.name)]
+      const result = [...existNames, ...newTags.map((item) => item.metadata.name)]
+      Logger.debug(`标签处理完成: ${result.join(', ')}`)
+      return result
     } catch (error) {
       Logger.error('获取标签名称失败:', error)
+      // 即使出错，也尝试返回一些基本的标签名称
+      Logger.warn('尝试使用 displayName 作为标签名称')
+      return displayNames.map(name => this.generateTagSlug(name))
+    }
+  }
+
+  /**
+   * 根据标签名称获取显示名称
+   */
+  async getTagDisplayNames(names?: string[]): Promise<string[]> {
+    if (!names || names.length === 0) {
       return []
+    }
+    
+    try {
+      const allTags = await this.getTags()
+      return names
+        .map((name) => {
+          const found = allTags.find((item) => item.metadata.name === name)
+          return found ? found.spec.displayName : undefined
+        })
+        .filter(Boolean) as string[]
+    } catch (error) {
+      Logger.error('获取标签显示名称失败:', error)
+      return []
+    }
+  }
+
+  /**
+   * 根据分类名称获取显示名称
+   */
+  async getCategoryDisplayNames(names?: string[]): Promise<string[]> {
+    if (!names || names.length === 0) {
+      return []
+    }
+    
+    try {
+      const allCategories = await this.getCategories()
+      return names
+        .map((name) => {
+          const found = allCategories.find((item) => item.metadata.name === name)
+          return found ? found.spec.displayName : undefined
+        })
+        .filter(Boolean) as string[]
+    } catch (error) {
+      Logger.error('获取分类显示名称失败:', error)
+      return []
+    }
+  }
+
+  /**
+   * 拉取文章到 Logseq
+   */
+  async pullPost(name: string): Promise<{ title: string; content: string; frontmatter: any } | null> {
+    try {
+      const post = await this.getPost(name)
+      
+      if (!post) {
+        Logger.error(`文章不存在: ${name}`)
+        return null
+      }
+      
+      // 获取分类和标签的显示名称
+      const postCategories = await this.getCategoryDisplayNames(post.post.spec.categories)
+      const postTags = await this.getTagDisplayNames(post.post.spec.tags)
+      
+      // 构建 frontmatter
+      const frontmatter = {
+        title: post.post.spec.title,
+        slug: post.post.spec.slug,
+        cover: post.post.spec.cover,
+        excerpt: post.post.spec.excerpt.autoGenerate ? undefined : post.post.spec.excerpt.raw,
+        categories: postCategories,
+        tags: postTags,
+        halo: {
+          site: this.site.url,
+          name: name,
+          publish: post.post.spec.publish
+        }
+      }
+      
+      Logger.info(`文章拉取成功: ${post.post.spec.title}`)
+      Logger.debug(`分类: ${postCategories.join(', ')}`)
+      Logger.debug(`标签: ${postTags.join(', ')}`)
+      
+      return {
+        title: post.post.spec.title,
+        content: post.content.raw,
+        frontmatter
+      }
+    } catch (error) {
+      Logger.error(`拉取文章失败 (${name}):`, error)
+      return null
     }
   }
 
@@ -520,47 +740,59 @@ export class HaloService {
   }
 
   /**
-   * 处理图片上传
+   * 处理附件上传（包括图片和其他文件类型）
    */
-  private async processImages(markdownContent: string): Promise<string> {
+  private async processAttachments(markdownContent: string): Promise<string> {
     try {
-      // 前端提示开始处理图片
-      logseq.UI.showMsg('🖼️ 开始处理图片上传...', 'info')
-      Logger.info('🖼️ 开始处理图片上传...')
+      // 前端提示开始处理附件
+      logseq.UI.showMsg('📎 开始处理附件上传...', 'info')
+      Logger.info('📎 开始处理附件上传...')
       Logger.info('📝 原始Markdown内容:', markdownContent)
       
       // 匹配 Logseq 图片语法: ![image.png](../assets/image_xxx.png)
       const imageRegex = /!\[([^\]]*)\]\((\.\.\/assets\/[^\)]+)\)/g
-      const matches = Array.from(markdownContent.matchAll(imageRegex))
+      const imageMatches = Array.from(markdownContent.matchAll(imageRegex))
       
-      Logger.info(`📊 图片匹配统计: 找到 ${matches.length} 张图片`)
+      // 匹配 Logseq 附件语法: [filename.ext](../assets/filename.ext)
+      const attachmentRegex = /\[([^\]]+\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|rtf|zip|rar|7z|tar|gz|mp3|wav|mp4|avi|mov|json|xml|csv))\]\((\.\.\/assets\/[^\)]+)\)/gi
+      const attachmentMatches = Array.from(markdownContent.matchAll(attachmentRegex))
       
-      if (matches.length === 0) {
-        logseq.UI.showMsg('✅ 没有找到需要上传的图片', 'info')
-        Logger.info('✅ 没有找到需要上传的图片，跳过图片处理')
+      const totalMatches = imageMatches.length + attachmentMatches.length
+      
+      Logger.info(`📊 附件匹配统计: 找到 ${imageMatches.length} 张图片, ${attachmentMatches.length} 个其他附件，共 ${totalMatches} 个文件`)
+      
+      if (totalMatches === 0) {
+        logseq.UI.showMsg('✅ 没有找到需要上传的附件', 'info')
+        Logger.info('✅ 没有找到需要上传的附件，跳过附件处理')
         return markdownContent
       }
       
-      // 前端提示找到的图片数量
-      logseq.UI.showMsg(`📊 找到 ${matches.length} 张图片，开始上传...`, 'info')
+      // 前端提示找到的附件数量
+      logseq.UI.showMsg(`📊 找到 ${totalMatches} 个附件（${imageMatches.length} 张图片，${attachmentMatches.length} 个其他文件），开始上传...`, 'info')
       
-      // 显示所有匹配到的图片信息
-      matches.forEach((match, index) => {
+      // 显示所有匹配到的文件信息
+      imageMatches.forEach((match, index) => {
         const [fullMatch, altText, imagePath] = match
         Logger.info(`📷 图片 ${index + 1}: alt="${altText}", path="${imagePath}"`)
       })
       
+      attachmentMatches.forEach((match, index) => {
+        const [fullMatch, fileName, extension, filePath] = match
+        Logger.info(`📎 附件 ${index + 1}: ${fileName} -> ${filePath}`)
+      })
+
       let processedContent = markdownContent
       let successCount = 0
       let failCount = 0
       
-      for (let i = 0; i < matches.length; i++) {
-        const match = matches[i]
+      // 处理图片上传
+      for (let i = 0; i < imageMatches.length; i++) {
+        const match = imageMatches[i]
         const [fullMatch, altText, imagePath] = match
         
         // 前端提示当前处理进度
-        logseq.UI.showMsg(`🔄 正在上传第 ${i + 1}/${matches.length} 张图片...`, 'info')
-        Logger.info(`🔄 正在处理第 ${i + 1}/${matches.length} 张图片...`)
+        logseq.UI.showMsg(`🔄 正在上传第 ${i + 1}/${totalMatches} 个文件...`, 'info')
+        Logger.info(`🔄 正在处理第 ${i + 1}/${totalMatches} 个文件...`)
         Logger.info(`   原始链接: ${fullMatch}`)
         
         try {
@@ -584,13 +816,52 @@ export class HaloService {
         }
       }
       
-      // 前端提示最终统计结果
-      if (failCount === 0) {
-        logseq.UI.showMsg(`🎉 所有图片上传完成！成功 ${successCount} 张`, 'success')
-      } else {
-        logseq.UI.showMsg(`📈 图片处理完成: 成功 ${successCount} 张, 失败 ${failCount} 张`, 'warning')
+      // 处理其他附件上传
+      for (let i = 0; i < attachmentMatches.length; i++) {
+        const match = attachmentMatches[i]
+        const [fullMatch, fileName, extension, filePath] = match
+        
+        // 前端提示当前处理进度
+        logseq.UI.showMsg(`🔄 正在上传第 ${imageMatches.length + i + 1}/${totalMatches} 个文件...`, 'info')
+        Logger.info(`🔄 正在处理第 ${imageMatches.length + i + 1}/${totalMatches} 个文件...`)
+        Logger.info(`   原始链接: ${fullMatch}`)
+        
+        try {
+          // 上传附件并获取新的URL
+          const uploadedUrl = await this.uploadImage(filePath, fileName)
+          
+          // 替换原始附件链接
+          const newAttachmentLink = `[${fileName}](${uploadedUrl})`
+          processedContent = processedContent.replace(fullMatch, newAttachmentLink)
+          
+          Logger.info(`✅ 附件上传成功!`)
+          Logger.info(`   原始路径: ${filePath}`)
+          Logger.info(`   Halo地址: ${uploadedUrl}`)
+          Logger.info(`   替换结果: ${newAttachmentLink}`)
+          successCount++
+        } catch (error) {
+          // uploadImage方法已经显示了详细的错误提示，这里只记录日志
+          Logger.error(`❌ 附件上传异常: ${filePath}`, error)
+          failCount++
+          // 继续处理其他附件，不中断整个流程
+        }
       }
-      Logger.info(`📈 图片处理完成: 成功 ${successCount} 张, 失败 ${failCount} 张`)
+      
+      // 统计缓存使用情况
+       const cacheHits = totalMatches - (successCount + failCount)
+       
+       // 前端提示最终统计结果
+       if (failCount === 0) {
+         if (cacheHits > 0) {
+           logseq.UI.showMsg(`🎉 附件处理完成！新上传 ${successCount} 个，缓存命中 ${cacheHits} 个`, 'success')
+         } else {
+           logseq.UI.showMsg(`🎉 所有附件上传完成！成功 ${successCount} 个`, 'success')
+         }
+       } else {
+         logseq.UI.showMsg(`📈 附件处理完成: 新上传 ${successCount} 个, 缓存命中 ${cacheHits} 个, 失败 ${failCount} 个`, 'warning')
+       }
+       Logger.info(`📈 附件处理完成: 新上传 ${successCount} 个, 缓存命中 ${cacheHits} 个, 失败 ${failCount} 个`)
+       Logger.info(`💾 当前缓存中共有 ${this.imageCache.size} 个文件`)
       
       if (successCount > 0) {
         Logger.info('🔄 最终处理后的内容:')
@@ -599,7 +870,7 @@ export class HaloService {
       
       return processedContent
     } catch (error) {
-      Logger.error('❌ 处理图片时发生严重错误:', error)
+      Logger.error('❌ 处理附件时发生严重错误:', error)
       return markdownContent // 返回原始内容，不中断发布流程
     }
   }
@@ -612,6 +883,16 @@ export class HaloService {
       Logger.info(`📤 开始上传图片到Halo...`)
       Logger.info(`   图片路径: ${imagePath}`)
       Logger.info(`   Alt文本: ${altText}`)
+      
+      // 检查缓存中是否已有该图片
+      const cachedUrl = this.imageCache.get(imagePath)
+      if (cachedUrl) {
+        Logger.info(`🎯 图片已存在缓存中，跳过上传`)
+        Logger.info(`   缓存路径: ${imagePath}`)
+        Logger.info(`   缓存URL: ${cachedUrl}`)
+        logseq.UI.showMsg(`⚡ 图片已缓存，跳过上传: ${this.extractFileName(imagePath)}`, 'info')
+        return cachedUrl
+      }
       
       // 显示上传开始提示
       logseq.UI.showMsg(`🔄 正在上传图片: ${this.extractFileName(imagePath)}`, 'info')
@@ -709,6 +990,10 @@ export class HaloService {
       
       // 显示上传成功提示
       logseq.UI.showMsg(`✅ 图片上传成功: ${fileName}`, 'success')
+      
+      // 将上传成功的图片URL缓存起来
+      this.imageCache.set(imagePath, relativeUrl)
+      Logger.info(`💾 图片URL已缓存: ${imagePath} -> ${relativeUrl}`)
       
       return relativeUrl
     } catch (error) {
@@ -826,6 +1111,39 @@ export class HaloService {
   }
 
   /**
+   * 清理图片缓存
+   */
+  public clearImageCache(): void {
+    const cacheSize = this.imageCache.size
+    this.imageCache.clear()
+    Logger.info(`🗑️ 图片缓存已清理，清理了 ${cacheSize} 张图片的缓存`)
+    logseq.UI.showMsg(`🗑️ 图片缓存已清理 (${cacheSize} 张图片)`, 'info')
+  }
+
+  /**
+   * 获取缓存状态
+   */
+  public getImageCacheStatus(): { size: number; entries: Array<{ path: string; url: string }> } {
+    const entries = Array.from(this.imageCache.entries()).map(([path, url]) => ({ path, url }))
+    return {
+      size: this.imageCache.size,
+      entries
+    }
+  }
+
+  /**
+   * 从缓存中移除特定图片
+   */
+  public removeFromImageCache(imagePath: string): boolean {
+    const removed = this.imageCache.delete(imagePath)
+    if (removed) {
+      Logger.info(`🗑️ 已从缓存中移除图片: ${imagePath}`)
+      logseq.UI.showMsg(`🗑️ 已从缓存中移除: ${this.extractFileName(imagePath)}`, 'info')
+    }
+    return removed
+  }
+
+  /**
    * 将完整URL转换为相对地址
    */
   private convertToRelativeUrl(fullUrl: string): string {
@@ -877,14 +1195,43 @@ export class HaloService {
   private getMimeType(fileName: string): string {
     const extension = fileName.toLowerCase().split('.').pop()
     const mimeTypes: Record<string, string> = {
+      // 图片类型
       'png': 'image/png',
       'jpg': 'image/jpeg',
       'jpeg': 'image/jpeg',
       'gif': 'image/gif',
       'webp': 'image/webp',
-      'svg': 'image/svg+xml'
+      'svg': 'image/svg+xml',
+      'bmp': 'image/bmp',
+      'ico': 'image/x-icon',
+      // 文档类型
+      'pdf': 'application/pdf',
+      'doc': 'application/msword',
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'xls': 'application/vnd.ms-excel',
+      'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'ppt': 'application/vnd.ms-powerpoint',
+      'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'txt': 'text/plain',
+      'rtf': 'application/rtf',
+      // 压缩文件
+      'zip': 'application/zip',
+      'rar': 'application/x-rar-compressed',
+      '7z': 'application/x-7z-compressed',
+      'tar': 'application/x-tar',
+      'gz': 'application/gzip',
+      // 音视频
+      'mp3': 'audio/mpeg',
+      'wav': 'audio/wav',
+      'mp4': 'video/mp4',
+      'avi': 'video/x-msvideo',
+      'mov': 'video/quicktime',
+      // 其他常见格式
+      'json': 'application/json',
+      'xml': 'application/xml',
+      'csv': 'text/csv'
     }
-    return mimeTypes[extension || ''] || 'image/png'
+    return mimeTypes[extension || ''] || 'application/octet-stream'
   }
 
   /**

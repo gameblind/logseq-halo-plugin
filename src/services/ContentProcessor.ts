@@ -154,6 +154,16 @@ export class ContentProcessor {
     const title = frontmatter.title || pageName
     const slug = frontmatter.slug || this.generateSlug(title)
     
+    // 解析 Halo 相关信息
+    let haloInfo: ArticleMetadata['halo'] | undefined
+    if (frontmatter.halo || frontmatter['halo-site'] || frontmatter['halo-post-name']) {
+      haloInfo = {
+        site: frontmatter.halo?.site || frontmatter['halo-site'] || '',
+        name: frontmatter.halo?.name || frontmatter['halo-post-name'] || '',
+        publish: frontmatter.halo?.publish ?? frontmatter.publish ?? frontmatter.published ?? false
+      }
+    }
+    
     return {
       title,
       slug,
@@ -167,7 +177,8 @@ export class ContentProcessor {
       pinned: frontmatter.pinned ?? false,
       allowComment: frontmatter.allowComment ?? frontmatter.comments ?? true,
       visible: frontmatter.visible || 'PUBLIC',
-      priority: frontmatter.priority ?? 0
+      priority: frontmatter.priority ?? 0,
+      halo: haloInfo
     }
   }
 

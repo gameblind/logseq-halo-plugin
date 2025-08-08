@@ -145,6 +145,23 @@ export class UIManager {
       )
       console.log('✅ halo-get-all-posts 命令注册成功')
 
+      // 从 Halo 拉取文章
+      logseq.App.registerCommand(
+        'halo-pull-post',
+        {
+          key: 'halo-pull-post',
+          label: '从 Halo 拉取文章',
+          desc: '从 Halo 站点拉取指定文章到 Logseq'
+        },
+        async () => {
+          const postName = prompt('请输入文章名称 (metadata.name):', 'post-')
+          if (postName && postName.trim()) {
+            await this.commandHandler.pullPostFromHalo(postName.trim())
+          }
+        }
+      )
+      console.log('✅ halo-pull-post 命令注册成功')
+
       console.log('🎉 所有命令注册完成')
       Logger.debug('命令注册完成')
     } catch (error) {
